@@ -12,6 +12,15 @@
 
 import os
 import sys
+import time
+import glob
+import h5py
+import numpy as np
+import nibabel as nib
+from data_loader.load_neuroimaging_data import map_aparc_aseg2label, create_weight_mask, transform_sagittal, \
+                                               transform_axial, get_thick_slices, filter_blank_slices_thick
+
+
 sys.path.append(os.path.dirname(__file__))
 
 # import the Chris app superclass
@@ -19,9 +28,15 @@ from chrisapp.base import ChrisApp
 
 
 Gstr_title = """
+                                 _         _         _  __ _____ 
+                                | |       | |       | |/ _|  ___|
+  __ _  ___ _ __   ___ _ __ __ _| |_ ___  | |__   __| | |_|___ \ 
+ / _` |/ _ \ '_ \ / _ \ '__/ _` | __/ _ \ | '_ \ / _` |  _|   \ \
+| (_| |  __/ | | |  __/ | | (_| | ||  __/ | | | | (_| | | /\__/ /
+ \__, |\___|_| |_|\___|_|  \__,_|\__\___| |_| |_|\__,_|_| \____/ 
+  __/ |                               ______                     
+ |___/                               |______|                    
 
-Generate a title from 
-http://patorjk.com/software/taag/#p=display&f=Doom&t=generate_hdf5
 
 """
 
@@ -132,50 +147,44 @@ class Generate_hdf5(ChrisApp):
         Use self.add_argument to specify a new app argument.
         """
         # Training settings
-    parser = argparse.ArgumentParser(description='HDF5-Creation')
 
-    parser.add_argument('--hdf5_name', type=str, default="testsuite_2.hdf5",
+        self.add_argument('--hdf5_name', dest='dataset_name',type=str,optional = True, default="testsuite_2.hdf5",
                         help='path and name of hdf5-dataset (default: testsuite_2.hdf5)')
-    parser.add_argument('--plane', type=str, default="axial", choices=["axial", "coronal", "sagittal"],
+        self.add_argument('--plane',dest='plane', type=str, default="axial",optional = True, choices=["axial", "coronal", "sagittal"],
                         help="Which plane to put into file (axial (default), coronal or sagittal)")
-    parser.add_argument('--height', type=int, default=256, help='Height of Image (Default 256)')
-    parser.add_argument('--width', type=int, default=256, help='Width of Image (Default 256)')
-    parser.add_argument('--data_dir', type=str, default="/testsuite", help="Directory with images to load")
-    parser.add_argument('--thickness', type=int, default=3, help="Number of pre- and succeeding slices (default: 3)")
-    parser.add_argument('--csv_file', type=str, default=None, help="Csv-file listing subjects to include in file")
-    parser.add_argument('--pattern', type=str, help="Pattern to match files in directory.")
-    parser.add_argument('--image_name', type=str, default="mri/orig.mgz",
+        self.add_argument('--height',dest='height', type=int,optional = True, default=256, help='Height of Image (Default 256)')
+        self.add_argument('--width', dest = 'height', type=int,optional = True, default=256, help='Width of Image (Default 256)')
+        self.add_argument('--thickness',dest = 'slice_thickness',type=int,optional = True, default=3, help="Number of pre- and succeeding slices (default: 3)")
+        self.add_argument('--pattern',dest ='pattern', type=str,optional = True, help="Pattern to match files in directory.",default="")
+        self.add_argument('--image_name',dest='image_name', type=str,optional = True, default="mri/orig.mgz",
                         help="Default name of original images. FreeSurfer orig.mgz is default (mri/orig.mgz)")
-    parser.add_argument('--gt_name', type=str, default="mri/aparc.DKTatlas+aseg.mgz",
+        self.add_argument('--gt_name',dest = 'gt_name', type=str,optional = True, default="mri/aparc.DKTatlas+aseg.mgz",
                         help="Default name for ground truth segmentations. Default: mri/aparc.DKTatlas+aseg.mgz."
                              " If Corpus Callosum segmentation is already removed, do not set gt_nocc."
                              " (e.g. for our internal training set mri/aparc.DKTatlas+aseg.filled.mgz exists already"
                              " and should be used here instead of mri/aparc.DKTatlas+aseg.mgz). ")
-    parser.add_argument('--gt_nocc', type=str, default=None,
-                        help="Segmentation without corpus callosum (used to mask this segmentation in ground truth)."
-                             " If the used segmentation was already processed, do not set this argument."
-                             " For a normal FreeSurfer input, use mri/aseg.auto_noCCseg.mgz.")
 
-    args = parser.parse_args()
 
-    network_params = {"dataset_name": args.hdf5_name, "height": args.height, "width": args.width,
-                      "data_path": args.data_dir, "thickness": args.thickness, "csv_file": args.csv_file,
-                      "pattern": args.pattern, "image_name": args.image_name,
-                      "gt_name": args.gt_name, "gt_nocc": args.gt_nocc}
-
+        
     def run(self, options):
         """
         Define the code to be run by this plugin app.
         """
         print(Gstr_title)
         print('Version: %s' % self.get_version())
+        
+        self.search_pattern = os.path.join(options.inputdir, options.pattern)
+        self.subject_dirs = os.listdir(self.search_pattern)
+        print (self.subject_dirs)
+        self.data_set_size = len(self.subject_dirs)
+        self.create_hdf5_dataset(options,plane=options.plane)
 
     def show_man_page(self):
         """
         Print the app's man page.
         """
         print(Gstr_synopsis)
-    def create_hdf5_dataset(self, plane='axial', is_small=False):
+    def create_hdf5_dataset( self,options,plane='axial', is_small=False):
         """
         Function to store all images in a given directory (or pattern) in a hdf5-file.
         :param str plane: which plane is processed (coronal, axial or saggital)
@@ -185,7 +194,7 @@ class Generate_hdf5(ChrisApp):
         start_d = time.time()
 
         # Prepare arrays to hold the data
-        orig_dataset = np.ndarray(shape=(256, 256, 0, 2 * self.slice_thickness + 1), dtype=np.uint8)
+        orig_dataset = np.ndarray(shape=(256, 256, 0, 2 * options.slice_thickness + 1), dtype=np.uint8)
         aseg_dataset = np.ndarray(shape=(256, 256, 0), dtype=np.uint8)
         weight_dataset = np.ndarray(shape=(256, 256, 0), dtype=np.float)
         subjects = []
@@ -196,23 +205,17 @@ class Generate_hdf5(ChrisApp):
             try:
                 start = time.time()
 
-                print("Volume Nr: {} Processing MRI Data from {}/{}".format(idx, current_subject, self.orig_name))
+                print("Volume Nr: {} Processing MRI Data from {}/{}".format(idx, current_subject, options.image_name))
 
                 # Load orig and aseg
-                orig = nib.load(join(current_subject, self.orig_name))
+                orig = nib.load(os.path.join(options.inputdir,current_subject, options.image_name))
                 orig = np.asarray(orig.get_fdata(), dtype=np.uint8)
 
-                aseg = nib.load(join(current_subject, self.aparc_name))
+                aseg = nib.load(os.path.join(options.inputdir,current_subject, options.gt_name))
 
-                print('Processing ground truth segmentation {}'.format(self.aparc_name))
+                print('Processing ground truth segmentation {}'.format(options.gt_name))
                 aseg = np.asarray(aseg.get_fdata(), dtype=np.int32)
                
-                if self.aparc_nocc is not None:
-                    aseg_nocc = nib.load(join(current_subject, self.aparc_nocc))
-                    aseg_nocc = np.asarray(aseg_nocc.get_data(), dtype=np.int16)
-
-                else:
-                    aseg_nocc = None
                 
                 # Map aseg to label space and create weight masks
                 if plane == 'sagittal':
@@ -223,7 +226,7 @@ class Generate_hdf5(ChrisApp):
                     weights = transform_sagittal(weights)
 
                 else:
-                    mapped_aseg, _ = map_aparc_aseg2label(aseg, aseg_nocc)
+                    mapped_aseg, _ = map_aparc_aseg2label(aseg)
                     weights = create_weight_mask(mapped_aseg)
                 
                 # Transform Data as needed (swap axis for axial view)
@@ -233,7 +236,7 @@ class Generate_hdf5(ChrisApp):
                     weights = transform_axial(weights)
 
                 # Create Thick Slices, filter out blanks
-                orig_thick = get_thick_slices(orig, self.slice_thickness)
+                orig_thick = get_thick_slices(orig, options.slice_thickness)
                 orig, mapped_aseg, weights = filter_blank_slices_thick(orig_thick, mapped_aseg, weights)
 
                 # Append finally processed images to arrays
@@ -262,7 +265,7 @@ class Generate_hdf5(ChrisApp):
         weight_dataset = np.transpose(weight_dataset, (2, 0, 1))
 
         # Write the hdf5 file
-        with h5py.File(self.dataset_name, "w") as hf:
+        with h5py.File(options.dataset_name, "w") as hf:
             hf.create_dataset('orig_dataset', data=orig_dataset, compression='gzip')
             hf.create_dataset('aseg_dataset', data=aseg_dataset, compression='gzip')
             hf.create_dataset('weight_dataset', data=weight_dataset, compression='gzip')
@@ -271,7 +274,7 @@ class Generate_hdf5(ChrisApp):
             hf.create_dataset("subject", data=subjects, dtype=dt, compression="gzip")
 
         end_d = time.time() - start_d
-        print("Successfully written {} in {:.3f} seconds.".format(self.dataset_name, end_d))
+        print("Successfully written {} in {:.3f} seconds.".format(options.dataset_name, end_d))
 
 # ENTRYPOINT
 if __name__ == "__main__":
