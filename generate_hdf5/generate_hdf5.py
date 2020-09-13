@@ -274,7 +274,7 @@ class Generate_hdf5(ChrisApp):
             hf.create_dataset("subject", data=subjects, dtype=dt, compression="gzip")
 
         end_d = time.time() - start_d
-        print("Successfully written {} in {:.3f} seconds.".format(options.dataset_name, end_d))
+        print("Successfully written {} in {:.3f} seconds.".format(options.outputdir + "/"+options.dataset_name, end_d))
 
 # ENTRYPOINT
 if __name__ == "__main__":
