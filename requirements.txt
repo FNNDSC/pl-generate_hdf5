@@ -1,2 +1,8 @@
 chrisapp
 pudb
+h5py
+nibabel
+scikit-image
+torch
+torchvision
+numpy
